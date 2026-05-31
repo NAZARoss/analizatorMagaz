@@ -392,7 +392,7 @@ fun MainDashboardScreen(viewModel: GroceryViewModel, onCityClick: () -> Unit) {
                         }
                     }
                     IconButton(
-                        onClick = { viewModel.refreshCurrentDayForecast() },
+                        onClick = { viewModel.refreshCurrentDayForecast(forceRefresh = true) },
                         colors = IconButtonDefaults.iconButtonColors(
                             containerColor = MaterialTheme.colorScheme.surfaceVariant
                         )

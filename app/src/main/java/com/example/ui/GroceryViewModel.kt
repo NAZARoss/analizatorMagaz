@@ -37,9 +37,24 @@ class GroceryViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope, SharingStarted.WhileSubscribed(5000), null
     )
 
+    private val sharedPrefs = context.getSharedPreferences("grocery_prefs", Context.MODE_PRIVATE)
+
     // Current city selection
-    private val _selectedCity = MutableStateFlow(WeatherHelper.DEFAULT_CITIES[0])
+    private val _selectedCity = MutableStateFlow(loadSavedCity())
     val selectedCity: StateFlow<City> = _selectedCity.asStateFlow()
+
+    private fun loadSavedCity(): City {
+        val name = sharedPrefs.getString("city_name", null)
+        val lat = sharedPrefs.getFloat("city_lat", -999f)
+        val lon = sharedPrefs.getFloat("city_lon", -999f)
+        val region = sharedPrefs.getString("city_region", "") ?: ""
+        
+        return if (name != null && lat != -999f && lon != -999f) {
+            City(name, lat.toDouble(), lon.toDouble(), region)
+        } else {
+            WeatherHelper.DEFAULT_CITIES[0]
+        }
+    }
 
     // City search results
     private val _citySearchResults = MutableStateFlow<List<City>>(emptyList())
@@ -112,6 +127,13 @@ class GroceryViewModel(application: Application) : AndroidViewModel(application)
     fun changeCity(city: City) {
         viewModelScope.launch {
             _selectedCity.value = city
+            sharedPrefs.edit().apply {
+                putString("city_name", city.name)
+                putFloat("city_lat", city.latitude.toFloat())
+                putFloat("city_lon", city.longitude.toFloat())
+                putString("city_region", city.region)
+                apply()
+            }
             refreshCurrentDayForecast(forceRefresh = true)
         }
     }

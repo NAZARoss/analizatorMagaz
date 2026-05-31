@@ -142,8 +142,8 @@ class GroceryRepository(private val groceryDao: GroceryDao) {
      * Generates simulated weather profiles so prediction is fully offline-capable.
      */
     private suspend fun generateSimulatedWeather(date: String, dayOfWeek: Int, cityName: String): DayRecord {
-        // Deterministic random based on date string so it remains stable for this date
-        val seed = date.hashCode().toLong()
+        // Deterministic random based on date and city name so it remains stable but differs per location
+        val seed = (date + cityName).hashCode().toLong()
         val random = Random(seed)
 
         // General conditions: sunny, rainy, cloudy based on day of week or random
