@@ -1,0 +1,6 @@
+{
+  "name": "Выход в Магазин",
+  "description": "Анализатор и прогнозист походов в магазин с учетом погоды по часам и истории активности",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
