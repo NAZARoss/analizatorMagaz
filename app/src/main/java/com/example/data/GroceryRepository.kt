@@ -79,36 +79,51 @@ class GroceryRepository(private val groceryDao: GroceryDao) {
     }
 
     /**
-     * Prepopulates a specific day record if it does not exist, fetching weather if connected,
-     * otherwise generating a highly realistic weather profile.
+     * Prepopulates a specific day record if it does not exist or if the location has changed, 
+     * fetching weather if connected, otherwise generating a highly realistic weather profile.
      */
-    suspend fun ensureDayRecordExists(date: String, dayOfWeek: Int, cityName: String, latitude: Double, longitude: Double) = withContext(Dispatchers.IO) {
+    suspend fun ensureDayRecordExists(
+        date: String, 
+        dayOfWeek: Int, 
+        cityName: String, 
+        latitude: Double, 
+        longitude: Double,
+        forceRefresh: Boolean = false
+    ) = withContext(Dispatchers.IO) {
         val existing = groceryDao.getDayRecord(date)
-        if (existing == null) {
+        if (existing == null || existing.cityName != cityName || forceRefresh) {
             try {
-                Log.d("GroceryRepository", "Fetching forecast from Open-Meteo for $cityName on $date")
+                Log.d("GroceryRepository", "Fetching forecast from Open-Meteo for $cityName on $date (forceRefresh=$forceRefresh)")
                 // Query general forecast
                 val forecast = WeatherApiClient.forecastService.getForecast(latitude, longitude)
                 val hourly = forecast.hourly
                 if (hourly != null && hourly.temperatures.size >= 24) {
-                    // Extract corresponding 24 hours of forecast
-                    // Usually Open-Meteo returns hourly starting from today's midnight.
-                    // Let's take the first 24 slots (today)
-                    val tempsToday = hourly.temperatures.take(24).map { it.toInt() }
-                    val wmoToday = hourly.weatherCodes.take(24)
+                    // Find indices corresponding to the selected date (e.g. "2026-06-01")
+                    val startIdx = hourly.time.indexOfFirst { it.startsWith(date) }
+                    val tempsForDate: List<Int>
+                    val wmoForDate: List<Int>
+                    
+                    if (startIdx != -1 && startIdx + 24 <= hourly.temperatures.size) {
+                        tempsForDate = hourly.temperatures.subList(startIdx, startIdx + 24).map { it.toInt() }
+                        wmoForDate = hourly.weatherCodes.subList(startIdx, startIdx + 24)
+                    } else {
+                        // fallback to first 24 slots if exact date cannot be parsed or matched
+                        tempsForDate = hourly.temperatures.take(24).map { it.toInt() }
+                        wmoForDate = hourly.weatherCodes.take(24)
+                    }
 
                     val record = DayRecord(
                         date = date,
                         dayOfWeek = dayOfWeek,
                         cityName = cityName,
-                        highTemp = tempsToday.maxOrNull() ?: 20,
-                        lowTemp = tempsToday.minOrNull() ?: 10,
-                        hourlyTemperatures = tempsToday.joinToString(","),
-                        hourlyConditions = wmoToday.joinToString(","),
+                        highTemp = tempsForDate.maxOrNull() ?: 20,
+                        lowTemp = tempsForDate.minOrNull() ?: 10,
+                        hourlyTemperatures = tempsForDate.joinToString(","),
+                        hourlyConditions = wmoForDate.joinToString(","),
                         hadTrips = groceryDao.getTripsForDay(date).isNotEmpty()
                     )
                     groceryDao.insertDayRecord(record)
-                    Log.d("GroceryRepository", "Saved real weather forecast for $date in database")
+                    Log.d("GroceryRepository", "Saved real weather forecast for $cityName on $date in database")
                     return@withContext
                 }
             } catch (e: Exception) {
@@ -116,8 +131,10 @@ class GroceryRepository(private val groceryDao: GroceryDao) {
             }
 
             // Fallback generation
-            val generated = generateSimulatedWeather(date, dayOfWeek, cityName)
-            groceryDao.insertDayRecord(generated)
+            if (existing == null || existing.cityName != cityName || forceRefresh) {
+                val generated = generateSimulatedWeather(date, dayOfWeek, cityName)
+                groceryDao.insertDayRecord(generated)
+            }
         }
     }
 

@@ -9,8 +9,13 @@ import android.os.VibratorManager
 object VibrationHelper {
     fun vibrateTripleShort(context: Context) {
         val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
-            vibratorManager?.defaultVibrator
+            try {
+                val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
+                vibratorManager?.defaultVibrator ?: (context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator)
+            } catch (e: Exception) {
+                @Suppress("DEPRECATION")
+                context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+            }
         } else {
             @Suppress("DEPRECATION")
             context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
@@ -18,12 +23,9 @@ object VibrationHelper {
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                // 3 short, sharp vibrations with silent gaps
-                // timings: start immediately (0ms wait), vibrate 80ms, silent 100ms, vibrate 80ms, silent 100ms, vibrate 80ms
+                // Use standard duration-only waveform which is compatible with all vibrators (independent of amplitude control support)
                 val timings = longArrayOf(0, 80, 100, 80, 100, 80)
-                // Amplitude 255 means maximum acceleration (sharp force)
-                val amplitudes = intArrayOf(0, 255, 0, 255, 0, 255)
-                val effect = VibrationEffect.createWaveform(timings, amplitudes, -1)
+                val effect = VibrationEffect.createWaveform(timings, -1)
                 vibrator.vibrate(effect)
             } else {
                 @Suppress("DEPRECATION")
@@ -31,6 +33,17 @@ object VibrationHelper {
             }
         } catch (e: Exception) {
             e.printStackTrace()
+            // Ultimate fallback to one single buzz in case waveforms are not supported at all
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    vibrator.vibrate(VibrationEffect.createOneShot(100, VibrationEffect.DEFAULT_AMPLITUDE))
+                } else {
+                    @Suppress("DEPRECATION")
+                    vibrator.vibrate(100)
+                }
+            } catch (ex: Exception) {
+                ex.printStackTrace()
+            }
         }
     }
 }

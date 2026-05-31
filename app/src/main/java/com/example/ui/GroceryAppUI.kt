@@ -54,6 +54,12 @@ fun GroceryAppUI(viewModel: GroceryViewModel) {
     val selectedCity by viewModel.selectedCity.collectAsState()
     val isDark = isSystemInDarkTheme()
 
+    // Hoisted city selection dialog state
+    var showCityDialog by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    val citySearchResults by viewModel.citySearchResults.collectAsState()
+    val isSearching by viewModel.isSearchingCities.collectAsState()
+
     Scaffold(
         bottomBar = {
             NavigationBar(
@@ -92,16 +98,147 @@ fun GroceryAppUI(viewModel: GroceryViewModel) {
                 .padding(innerPadding)
         ) {
             when (currentTab) {
-                0 -> MainDashboardScreen(viewModel)
+                0 -> MainDashboardScreen(viewModel, onCityClick = { showCityDialog = true })
                 1 -> HistoryScreen(viewModel)
-                2 -> SettingsScreen(viewModel)
+                2 -> SettingsScreen(viewModel, onCityClick = { showCityDialog = true })
+            }
+        }
+    }
+
+    // Hoisted City dialog itself
+    if (showCityDialog) {
+        Dialog(onDismissRequest = { showCityDialog = false }) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(480.dp),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        "Быстрый выбор города",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(bottom = 12.dp)
+                    )
+
+                    // Predefined favorites
+                    Text(
+                        "Популярные города РФ:",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    )
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        WeatherHelper.DEFAULT_CITIES.take(5).forEach { city ->
+                            AssistChip(
+                                onClick = {
+                                    viewModel.changeCity(city)
+                                    showCityDialog = false
+                                },
+                                label = { Text(city.name) }
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = {
+                            searchQuery = it
+                            viewModel.searchCities(it)
+                        },
+                        label = { Text("Поиск города (например: Сочи)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        trailingIcon = {
+                            if (isSearching) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                            } else {
+                                Icon(Icons.Default.Search, contentDescription = "Найти")
+                            }
+                        }
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    LazyColumn(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        if (citySearchResults.isNotEmpty()) {
+                            items(citySearchResults) { city ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            viewModel.changeCity(city)
+                                            showCityDialog = false
+                                        }
+                                        .padding(vertical = 8.dp, horizontal = 6.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(city.name, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        text = city.region,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                    )
+                                }
+                                Divider(color = MaterialTheme.colorScheme.surfaceVariant)
+                            }
+                        } else if (searchQuery.length >= 2) {
+                            item {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text("Города не найдены...")
+                                }
+                            }
+                        } else {
+                            item {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        "Введите название для поиска",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(onClick = { showCityDialog = false }) {
+                            Text("Закрыть")
+                        }
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-fun MainDashboardScreen(viewModel: GroceryViewModel) {
+fun MainDashboardScreen(viewModel: GroceryViewModel, onCityClick: () -> Unit) {
     val context = LocalContext.current
     val todayDate = remember { viewModel.getFormattedDate(0) }
     val todayDayOfWeek = remember { viewModel.getDayOfWeekLabel(0) }
@@ -161,7 +298,10 @@ fun MainDashboardScreen(viewModel: GroceryViewModel) {
                         containerColor = MaterialTheme.colorScheme.surface
                     ),
                     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                    shape = RoundedCornerShape(100.dp)
+                    shape = RoundedCornerShape(100.dp),
+                    modifier = Modifier
+                        .clickable { onCityClick() }
+                        .testTag("location_indicator_card")
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
@@ -617,8 +757,16 @@ fun HistoryScreen(viewModel: GroceryViewModel) {
     var showAddDialog by remember { mutableStateOf(false) }
     var selectedTripToEdit by remember { mutableStateOf<Trip?>(null) }
 
+    val todayDate = remember { viewModel.getFormattedDate(0) }
+    // Filter out future records and show only days that actually have recorded trips for clean start
+    val pastRecordsWithTrips = remember(allDayRecords, allTrips, todayDate) {
+        allDayRecords.filter { record ->
+            record.date <= todayDate && allTrips.any { it.date == record.date }
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
-        if (allDayRecords.isEmpty()) {
+        if (pastRecordsWithTrips.isEmpty()) {
             Box(
                 modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
@@ -645,7 +793,7 @@ fun HistoryScreen(viewModel: GroceryViewModel) {
                     )
                 }
 
-                items(allDayRecords) { record ->
+                items(pastRecordsWithTrips) { record ->
                     val dayTrips = allTrips.filter { it.date == record.date }
                     var isExpandedDay by remember { mutableStateOf(false) }
 
@@ -809,15 +957,10 @@ fun HistoryScreen(viewModel: GroceryViewModel) {
 }
 
 @Composable
-fun SettingsScreen(viewModel: GroceryViewModel) {
+fun SettingsScreen(viewModel: GroceryViewModel, onCityClick: () -> Unit) {
     val selectedCity by viewModel.selectedCity.collectAsState()
-    val citySearchResults by viewModel.citySearchResults.collectAsState()
-    val isSearching by viewModel.isSearchingCities.collectAsState()
     val allDayRecords by viewModel.allDayRecords.collectAsState()
     val allTrips by viewModel.allTrips.collectAsState()
-
-    var searchQuery by remember { mutableStateOf("") }
-    var showCityDialog by remember { mutableStateOf(false) }
 
     LazyColumn(
         modifier = Modifier
@@ -866,7 +1009,7 @@ fun SettingsScreen(viewModel: GroceryViewModel) {
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Button(
-                        onClick = { showCityDialog = true },
+                        onClick = onCityClick,
                         modifier = Modifier.fillMaxWidth().height(48.dp),
                         shape = RoundedCornerShape(100.dp),
                         colors = ButtonDefaults.buttonColors(
@@ -960,136 +1103,6 @@ fun SettingsScreen(viewModel: GroceryViewModel) {
                         fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onSurface
                     )
-                }
-            }
-        }
-    }
-
-    if (showCityDialog) {
-        Dialog(onDismissRequest = { showCityDialog = false }) {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(480.dp),
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        "Быстрый выбор города",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(bottom = 12.dp)
-                    )
-
-                    // Predefined favorites
-                    Text(
-                        "Популярные города РФ:",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(bottom = 6.dp)
-                    )
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        WeatherHelper.DEFAULT_CITIES.take(5).forEach { city ->
-                            AssistChip(
-                                onClick = {
-                                    viewModel.changeCity(city)
-                                    showCityDialog = false
-                                },
-                                label = { Text(city.name) }
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    OutlinedTextField(
-                        value = searchQuery,
-                        onValueChange = {
-                            searchQuery = it
-                            viewModel.searchCities(it)
-                        },
-                        label = { Text("Поиск города (например: Сочи)") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        trailingIcon = {
-                            if (isSearching) {
-                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                            } else {
-                                Icon(Icons.Default.Search, contentDescription = "Найти")
-                            }
-                        }
-                    )
-
-                    Spacer(modifier = Modifier.height(12.dp))
-
-                    LazyColumn(
-                        modifier = Modifier.weight(1f),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        if (citySearchResults.isNotEmpty()) {
-                            items(citySearchResults) { city ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            viewModel.changeCity(city)
-                                            showCityDialog = false
-                                        }
-                                        .padding(vertical = 8.dp, horizontal = 6.dp),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(city.name, fontWeight = FontWeight.Bold)
-                                    Text(
-                                        text = city.region,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                                    )
-                                }
-                                Divider(color = MaterialTheme.colorScheme.surfaceVariant)
-                            }
-                        } else if (searchQuery.length >= 2) {
-                            item {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(16.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text("Города не найдены...")
-                                }
-                            }
-                        } else {
-                            item {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(16.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        "Введите название для поиска",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        TextButton(onClick = { showCityDialog = false }) {
-                            Text("Закрыть")
-                        }
-                    }
                 }
             }
         }

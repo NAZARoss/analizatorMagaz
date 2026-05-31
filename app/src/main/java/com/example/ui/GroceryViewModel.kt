@@ -64,11 +64,22 @@ class GroceryViewModel(application: Application) : AndroidViewModel(application)
         // Schedule dynamic reminder
         ReminderReceiver.scheduleDailyReminder(context)
 
-        // Invalidate lists and prepopulate if database is completely empty
+        // Invalidate lists and refresh today's forecast
         viewModelScope.launch(Dispatchers.IO) {
-            prepopulateHistoryIfEmpty()
-            refreshCurrentDayForecast()
+            // Note: Pre-population of historic data is deleted to keep the database completely clean and empty (zeros) on first load
+            refreshCurrentDayForecast(forceRefresh = false)
             startActiveTripTimer()
+            startPeriodicWeatherUpdater()
+        }
+    }
+
+    private fun startPeriodicWeatherUpdater() {
+        viewModelScope.launch(Dispatchers.IO) {
+            while (true) {
+                delay(30 * 60 * 1000) // 30 minutes
+                Log.d("GroceryViewModel", "Periodic 30-minute weather update triggered.")
+                refreshCurrentDayForecast(forceRefresh = true)
+            }
         }
     }
 
@@ -101,7 +112,7 @@ class GroceryViewModel(application: Application) : AndroidViewModel(application)
     fun changeCity(city: City) {
         viewModelScope.launch {
             _selectedCity.value = city
-            refreshCurrentDayForecast()
+            refreshCurrentDayForecast(forceRefresh = true)
         }
     }
 
@@ -135,15 +146,15 @@ class GroceryViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun refreshCurrentDayForecast() {
+    fun refreshCurrentDayForecast(forceRefresh: Boolean = false) {
         viewModelScope.launch(Dispatchers.IO) {
             val city = _selectedCity.value
             val todayDate = getFormattedDate(0)
             val tomorrowDate = getFormattedDate(1)
 
             // Ensure forecasts exist
-            repository.ensureDayRecordExists(todayDate, getDayOfWeekInt(0), city.name, city.latitude, city.longitude)
-            repository.ensureDayRecordExists(tomorrowDate, getDayOfWeekInt(1), city.name, city.latitude, city.longitude)
+            repository.ensureDayRecordExists(todayDate, getDayOfWeekInt(0), city.name, city.latitude, city.longitude, forceRefresh)
+            repository.ensureDayRecordExists(tomorrowDate, getDayOfWeekInt(1), city.name, city.latitude, city.longitude, forceRefresh)
 
             updatePredictions()
         }
