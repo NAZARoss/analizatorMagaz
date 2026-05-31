@@ -55,164 +55,225 @@ object PredictionEngine {
         // Step 1: Detect actual trip clusters from history to find personalized time windows
         val activeWindows = getAdaptiveTimeWindows(allTrips, isWeekend)
 
+        // Only evaluate past days/trips to avoid target leakage during active predictions
+        val pastDays = allDays.filter { it.date < targetDate }
+        val pastTrips = allTrips.filter { it.date < targetDate }
+
         // Step 2: For each time window, calculate personal statistical probability
         activeWindows.forEachIndexed { idx, win ->
             val startMin = timeToMinutes(win.startTime)
             val endMin = timeToMinutes(win.endTime)
 
-            // A. Base Probability check
-            var baseProb = win.defaultProb
-            var explanation = "Базовый прогноз для ${if (isWeekend) "выходного" else "буднего"} дня."
-
-            if (allDays.isNotEmpty()) {
-                val matchingDays = allDays.filter { it.dayOfWeek == targetDayOfWeek }
-                if (matchingDays.isNotEmpty()) {
-                    var tripsInWindowCount = 0
-                    matchingDays.forEach { day ->
-                        val dayTrips = allTrips.filter { it.date == day.date }
-                        val hasTripInWindow = dayTrips.any { trip ->
-                            val tripStartMin = getMinutesOfDay(trip.startTime)
-                            tripStartMin in startMin..endMin
-                        }
-                        if (hasTripInWindow) tripsInWindowCount++
-                    }
-                    // Bayesian smoothed frequency: (matching_trips + 1) / (matching_days + 2)
-                    val historicalProb = ((tripsInWindowCount + 1).toFloat() / (matchingDays.size + 2).toFloat() * 100).toInt()
-                    baseProb = historicalProb.coerceIn(5, 95)
-                    explanation = "На основе ${matchingDays.size} похожих дней недели (${tripsInWindowCount} выходов)."
-                } else {
-                    // Overall history
-                    var tripsInWindowCount = 0
-                    allDays.forEach { day ->
-                        val dayTrips = allTrips.filter { it.date == day.date }
-                        val hasTripInWindow = dayTrips.any { trip ->
-                            val tripStartMin = getMinutesOfDay(trip.startTime)
-                            tripStartMin in startMin..endMin
-                        }
-                        if (hasTripInWindow) tripsInWindowCount++
-                    }
-                    val historicalProb = ((tripsInWindowCount + 1).toFloat() / (allDays.size + 2).toFloat() * 100).toInt()
-                    baseProb = historicalProb.coerceIn(5, 95)
-                    explanation = "На основе всей истории статистики (${tripsInWindowCount} выходов)."
-                }
-            }
-
-            // B. Apply Weather Forecast Factor for the target interval
             val startHour = (startMin / 60).coerceIn(0, 23)
             val endHour = ((endMin / 60).coerceIn(0, 23)).coerceAtLeast(startHour)
-            
-            // Collect weather codes during these forecast hours
+
+            // Current weather features for the target interval
             val forecastWmos = wmos.subList(startHour, (endHour + 1).coerceAtMost(24))
             val isRainyForecast = forecastWmos.any { WeatherHelper.isRainCode(it) }
 
-            var weatherMultiplier = 1.0
-            
-            if (allDays.isNotEmpty()) {
-                // Let's analyze historical rain impact
-                // How many days did it rain in this interval? And did the user go?
-                var rainDaysInWindow = 0
-                var rainTripsInWindow = 0
-                
-                var dryDaysInWindow = 0
-                var dryTripsInWindow = 0
+            val hoursBefore = (startHour - 4).coerceAtLeast(0)
+            val wasRainyEarlier = wmos.subList(hoursBefore, startHour).any { WeatherHelper.isRainCode(it) }
+            val isRainClearingForecast = wasRainyEarlier && !isRainyForecast
 
-                allDays.forEach { day ->
-                    val dayWmos = parseCommaString(day.hourlyConditions)
-                    val dayTrips = allTrips.filter { it.date == day.date }
+            val avgTemp = temps.subList(startHour, (endHour + 1).coerceAtMost(24)).average()
+            val tempCategory = when {
+                avgTemp < 5 -> "cold"       // Cold (< 5°C)
+                avgTemp > 24 -> "hot"       // Hot (> 24°C)
+                else -> "pleasant"          // Comfort zone (5°C to 24°C)
+            }
+
+            var baseProb = win.defaultProb
+            var explanation = ""
+
+            // Case 1: Absolutely no user history — statistics are empty
+            if (pastTrips.isEmpty() || pastDays.isEmpty()) {
+                baseProb = win.defaultProb
+                explanation = "Начальный базовый ориентир. Связь с погодой будет рассчитана при накоплении истории ваших выходов."
+                predictions.add(
+                    Prediction(
+                        index = idx + 1,
+                        probability = baseProb,
+                        startTime = win.startTime,
+                        endTime = win.endTime,
+                        reason = explanation
+                    )
+                )
+                return@forEachIndexed
+            }
+
+            // Case 2: History exists. Let's compute pure evidence-based Bayesian correlation.
+            
+            // A. Base Probability check in this window for this weekday
+            val matchingDays = pastDays.filter { it.dayOfWeek == targetDayOfWeek }
+            val totalMatchingDaysCount = matchingDays.size
+            var tripsOnMatchingDaysCount = 0
+            
+            if (totalMatchingDaysCount > 0) {
+                matchingDays.forEach { day ->
+                    val dayTrips = pastTrips.filter { it.date == day.date }
                     val hasTripInWindow = dayTrips.any { trip ->
                         val tripStartMin = getMinutesOfDay(trip.startTime)
                         tripStartMin in startMin..endMin
                     }
+                    if (hasTripInWindow) tripsOnMatchingDaysCount++
+                }
+                // Bayesian smoothed probability: (matching_trips + 1) / (matching_days + 2)
+                val historicalProb = ((tripsOnMatchingDaysCount + 1).toFloat() / (totalMatchingDaysCount + 2).toFloat() * 100).toInt()
+                baseProb = historicalProb.coerceIn(10, 90)
+                explanation = "В этот день недели вы совершили $tripsOnMatchingDaysCount выходов за $totalMatchingDaysCount наблюдений. "
+            } else {
+                // Baseline across overall history if no matching day of week exists yet
+                var overallTripsCount = 0
+                pastDays.forEach { day ->
+                    val dayTrips = pastTrips.filter { it.date == day.date }
+                    val hasTripInWindow = dayTrips.any { trip ->
+                        val tripStartMin = getMinutesOfDay(trip.startTime)
+                        tripStartMin in startMin..endMin
+                    }
+                    if (hasTripInWindow) overallTripsCount++
+                }
+                val historicalProb = ((overallTripsCount + 1).toFloat() / (pastDays.size + 2).toFloat() * 100).toInt()
+                baseProb = historicalProb.coerceIn(10, 90)
+                explanation = "Базовый шанс по истории выходов ($overallTripsCount за ${pastDays.size} дн). "
+            }
 
-                    // Check if it was raining during this window on that historical day
-                    val hadRainInHistWindow = if (dayWmos.size >= 24) {
-                        dayWmos.subList(startHour, (endHour + 1).coerceAtMost(24)).any { WeatherHelper.isRainCode(it) }
-                    } else false
+            // B. Evaluate dynamic weather multipliers based ONLY on past evidence/uniqueness of behavior
+            val pWindowBase = baseProb.toDouble() / 100.0
 
-                    if (hadRainInHistWindow) {
-                        rainDaysInWindow++
-                        if (hasTripInWindow) rainTripsInWindow++
-                    } else {
-                        dryDaysInWindow++
-                        if (hasTripInWindow) dryTripsInWindow++
+            var rainMultiplier = 1.0
+            var clearingMultiplier = 1.0
+            var tempMultiplier = 1.0
+
+            val weatherExplanations = mutableListOf<String>()
+
+            // 1. Current rain feature
+            if (isRainyForecast) {
+                var rainDays = 0
+                var rainTrips = 0
+                pastDays.forEach { day ->
+                    val dayWmos = parseCommaString(day.hourlyConditions)
+                    if (dayWmos.size >= 24) {
+                        val wasRainInHistWindow = dayWmos.subList(startHour, (endHour + 1).coerceAtMost(24)).any { WeatherHelper.isRainCode(it) }
+                        if (wasRainInHistWindow) {
+                            rainDays++
+                            val dayTrips = pastTrips.filter { it.date == day.date }
+                            val hasTripInWindow = dayTrips.any { trip ->
+                                val tripStartMin = getMinutesOfDay(trip.startTime)
+                                tripStartMin in startMin..endMin
+                            }
+                            if (hasTripInWindow) rainTrips++
+                        }
                     }
                 }
 
-                if (isRainyForecast) {
-                    if (rainDaysInWindow > 0) {
-                        // user's historical probability under rain
-                        val rainRatio = rainTripsInWindow.toDouble() / rainDaysInWindow.toDouble()
-                        val normalRatio = if (dryDaysInWindow > 0) dryTripsInWindow.toDouble() / dryDaysInWindow.toDouble() else 0.5
-                        
-                        if (rainRatio < normalRatio) {
-                            weatherMultiplier = (0.3 + 0.7 * (rainRatio / (normalRatio.coerceAtLeast(0.01)))).coerceIn(0.1, 1.0)
-                            explanation += " Вероятность снижена: во время дождя вы обычно остаетесь дома."
-                        } else {
-                            weatherMultiplier = 1.1 // User doesn't mind rain!
-                            explanation += " Дождь не мешает вашим планам."
-                        }
+                if (rainDays > 0) {
+                    val pRain = (rainTrips + 1).toDouble() / (rainDays + 2).toDouble()
+                    rainMultiplier = pRain / pWindowBase
+                    
+                    if (rainMultiplier > 1.05) {
+                        weatherExplanations.add("Вопреки дождю в эти часы вы часто выходили ранее ($rainTrips из $rainDays раз)")
+                    } else if (rainMultiplier < 0.95) {
+                        weatherExplanations.add("При дожде вы обычно предпочитаете пересидеть дома ($rainTrips выходов за $rainDays дождливых дней)")
                     } else {
-                        // Default severe drop for rain
-                        weatherMultiplier = 0.4
-                        explanation += " Ожидается дождь: вероятность похода обычно значительно ниже."
+                        weatherExplanations.add("Дождь не влияет на вашу частоту выходов по статистике")
                     }
                 } else {
-                    // Forecast is DRY during window, but let's check transition! "сейчас дождь, но к вечеру сухо — вероятность вечернего выхода выше"
-                    // If weather is wet leading up to this window (last 4 hours prior are rainy)
-                    val hoursBefore = (startHour - 4).coerceAtLeast(0)
-                    val wasRainyEarlier = wmos.subList(hoursBefore, startHour).any { WeatherHelper.isRainCode(it) }
+                    weatherExplanations.add("Влияние дождя не учтено: вы ещё ни разу не пользовались приложением в дождь в эти часы")
+                }
+            }
 
-                    if (wasRainyEarlier) {
-                        // Rain clears up! Look at historical occurrences of rain clearing up
-                        var clearUpDays = 0
-                        var clearUpTrips = 0
-
-                        allDays.forEach { day ->
-                            val dayWmos = parseCommaString(day.hourlyConditions)
-                            if (dayWmos.size >= 24) {
-                                val histWasRainyEarlier = dayWmos.subList(hoursBefore, startHour).any { WeatherHelper.isRainCode(it) }
-                                val histIsDryNow = !dayWmos.subList(startHour, (endHour + 1).coerceAtMost(24)).any { WeatherHelper.isRainCode(it) }
-                                if (histWasRainyEarlier && histIsDryNow) {
-                                    clearUpDays++
-                                    val dayTrips = allTrips.filter { it.date == day.date }
-                                    val hasTripInWindow = dayTrips.any { trip ->
-                                        val tripStartMin = getMinutesOfDay(trip.startTime)
-                                        tripStartMin in startMin..endMin
-                                    }
-                                    if (hasTripInWindow) clearUpTrips++
-                                }
+            // 2. Clear up transition feature
+            if (isRainClearingForecast) {
+                var clearDays = 0
+                var clearTrips = 0
+                pastDays.forEach { day ->
+                    val dayWmos = parseCommaString(day.hourlyConditions)
+                    if (dayWmos.size >= 24) {
+                        val histWasRainyEarlier = dayWmos.subList(hoursBefore, startHour).any { WeatherHelper.isRainCode(it) }
+                        val histIsDryNow = !dayWmos.subList(startHour, (endHour + 1).coerceAtMost(24)).any { WeatherHelper.isRainCode(it) }
+                        if (histWasRainyEarlier && histIsDryNow) {
+                            clearDays++
+                            val dayTrips = pastTrips.filter { it.date == day.date }
+                            val hasTripInWindow = dayTrips.any { trip ->
+                                val tripStartMin = getMinutesOfDay(trip.startTime)
+                                tripStartMin in startMin..endMin
                             }
-                        }
-
-                        if (clearUpDays > 0 && clearUpTrips > 0) {
-                            weatherMultiplier = 1.4 // strong increase based on history!
-                            explanation += " Рост вероятности: дождь прекратится, повышенное желание выйти."
-                        } else {
-                            // Default positive transition boost
-                            weatherMultiplier = 1.25
-                            explanation += " Дождь прекратится к началу интервала (эффект накопленного спроса)."
+                            if (hasTripInWindow) clearTrips++
                         }
                     }
                 }
-            } else {
-                // Default fallback rules without daily records
-                if (isRainyForecast) {
-                    weatherMultiplier = 0.5
-                    explanation += " В прогнозе дождь (коррекция вероятности)."
+
+                if (clearDays > 0) {
+                    val pClear = (clearTrips + 1).toDouble() / (clearDays + 2).toDouble()
+                    clearingMultiplier = pClear / pWindowBase
+                    
+                    if (clearingMultiplier > 1.05) {
+                        weatherExplanations.add("Вы склонны выходить сразу после окончания дождя ($clearTrips из $clearDays раз)")
+                    } else if (clearingMultiplier < 0.95) {
+                        weatherExplanations.add("После окончания дождя вы выходите реже обычного ($clearTrips из $clearDays раз)")
+                    } else {
+                        weatherExplanations.add("Прояснение после дождя не меняет вашу привычную активность")
+                    }
+                } else {
+                    weatherExplanations.add("Эффект улучшения погоды не учтен: ранее таких ситуаций не происходило")
                 }
             }
 
-            // Apply temperature coefficient (extreme cold / extreme heat reduces grocery runs)
-            val avgTemp = temps.subList(startHour, (endHour + 1).coerceAtMost(24)).average()
-            if (avgTemp < -15) {
-                weatherMultiplier *= 0.7
-                explanation += " Очень холодно ($avgTemp°C), поход маловероятен."
-            } else if (avgTemp > 33) {
-                weatherMultiplier *= 0.8
-                explanation += " Сильная жара ($avgTemp°C), выход переносится."
+            // 3. Temperature category feature
+            var tempDays = 0
+            var tempTrips = 0
+            pastDays.forEach { day ->
+                val dayTemps = parseCommaString(day.hourlyTemperatures)
+                if (dayTemps.size >= 24) {
+                    val histAvgTemp = dayTemps.subList(startHour, (endHour + 1).coerceAtMost(24)).average()
+                    val histTempCategory = when {
+                        histAvgTemp < 5 -> "cold"
+                        histAvgTemp > 24 -> "hot"
+                        else -> "pleasant"
+                    }
+                    if (histTempCategory == tempCategory) {
+                        tempDays++
+                        val dayTrips = pastTrips.filter { it.date == day.date }
+                        val hasTripInWindow = dayTrips.any { trip ->
+                            val tripStartMin = getMinutesOfDay(trip.startTime)
+                            tripStartMin in startMin..endMin
+                        }
+                        if (hasTripInWindow) tempTrips++
+                    }
+                }
             }
 
-            val finalProb = (baseProb * weatherMultiplier).toInt().coerceIn(1, 99)
+            if (tempDays > 0) {
+                val pTemp = (tempTrips + 1).toDouble() / (tempDays + 2).toDouble()
+                tempMultiplier = pTemp / pWindowBase
+                
+                if (tempMultiplier > 1.05) {
+                    val label = when (tempCategory) {
+                        "cold" -> "прохладную"
+                        "hot" -> "жаркую"
+                        else -> "комфортную"
+                    }
+                    weatherExplanations.add("Вы охотнее выходите в такую $label погоду ($tempTrips из $tempDays раз)")
+                } else if (tempMultiplier < 0.95) {
+                    val label = when (tempCategory) {
+                        "cold" -> "холод"
+                        "hot" -> "жару"
+                        else -> "такую температуру"
+                    }
+                    weatherExplanations.add("Вы предпочитаете оставаться дома в $label ($tempTrips из $tempDays раз)")
+                }
+            } else {
+                weatherExplanations.add("Статистика по температуре (${String.format("%.1f", avgTemp)}°C) за этот интервал отсутствует")
+            }
+
+            // Combine evidence multipliers under safety bounds (limit multipliers to prevent wild runaways)
+            val totalMultiplier = (rainMultiplier * clearingMultiplier * tempMultiplier).coerceIn(0.2, 3.0)
+            val finalProb = (baseProb * totalMultiplier).toInt().coerceIn(1, 99)
+
+            if (weatherExplanations.isNotEmpty()) {
+                explanation += weatherExplanations.joinToString(". ") + "."
+            }
+
             predictions.add(
                 Prediction(
                     index = idx + 1,
@@ -225,14 +286,10 @@ object PredictionEngine {
         }
 
         // Return statistical selection (1 to 4 predictions based on probability threshold)
-        // Sort: highest probability first
         val sorted = predictions.sortedByDescending { it.probability }
-        
-        // Return between 1 and 4 depending on how many are statistically viable (e.g. at least >15% probability)
         val filtered = sorted.filterIndexed { index, pred ->
             index == 0 || pred.probability >= 20
         }
-        
         return filtered.take(4)
     }
 

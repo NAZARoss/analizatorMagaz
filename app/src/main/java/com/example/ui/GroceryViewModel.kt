@@ -81,7 +81,13 @@ class GroceryViewModel(application: Application) : AndroidViewModel(application)
 
         // Invalidate lists and refresh today's forecast
         viewModelScope.launch(Dispatchers.IO) {
-            // Note: Pre-population of historic data is deleted to keep the database completely clean and empty (zeros) on first load
+            // One-time database clear to wipe any legacy prepopulated mock records and start perfectly clean
+            val hasClearedPrepopulation = sharedPrefs.getBoolean("has_cleared_prepopulation_v3", false)
+            if (!hasClearedPrepopulation) {
+                db.groceryDao().deleteAllTrips()
+                db.groceryDao().deleteAllDayRecords()
+                sharedPrefs.edit().putBoolean("has_cleared_prepopulation_v3", true).apply()
+            }
             refreshCurrentDayForecast(forceRefresh = false)
             startActiveTripTimer()
             startPeriodicWeatherUpdater()

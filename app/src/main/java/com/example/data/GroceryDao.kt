@@ -47,4 +47,10 @@ interface GroceryDao {
 
     @Query("SELECT * FROM trips WHERE endTime IS NULL LIMIT 1")
     fun getActiveTripFlow(): Flow<Trip?>
+
+    @Query("DELETE FROM trips")
+    suspend fun deleteAllTrips()
+
+    @Query("DELETE FROM day_records")
+    suspend fun deleteAllDayRecords()
 }
