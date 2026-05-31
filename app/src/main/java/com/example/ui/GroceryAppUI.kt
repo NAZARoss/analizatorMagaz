@@ -758,11 +758,11 @@ fun HistoryScreen(viewModel: GroceryViewModel) {
     var selectedTripToEdit by remember { mutableStateOf<Trip?>(null) }
 
     val todayDate = remember { viewModel.getFormattedDate(0) }
-    // Filter out future records and show only days that actually have recorded trips for clean start
-    val pastRecordsWithTrips = remember(allDayRecords, allTrips, todayDate) {
+    // Filter out future records and sort descending (most recent first) to show full, rich calendar timeline
+    val pastRecordsWithTrips = remember(allDayRecords, todayDate) {
         allDayRecords.filter { record ->
-            record.date <= todayDate && allTrips.any { it.date == record.date }
-        }
+            record.date <= todayDate
+        }.sortedByDescending { it.date }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {

@@ -105,7 +105,11 @@ class ReminderReceiver : BroadcastReceiver() {
     }
 
     override fun onReceive(context: Context, intent: Intent?) {
-        if (intent?.action == ACTION_TRIGGER_REMINDER || intent?.action == Intent.ACTION_BOOT_COMPLETED) {
+        if (intent?.action == Intent.ACTION_BOOT_COMPLETED) {
+            scheduleDailyReminder(context)
+            return
+        }
+        if (intent?.action == ACTION_TRIGGER_REMINDER) {
             fireImmediateNotification(context)
             // Schedule for tomorrow as well
             scheduleDailyReminder(context)

@@ -28,6 +28,13 @@ object PredictionEngine {
         val weekendProb: Int
     )
 
+    // Bayesian regularization/shrinkage to pull small counts toward default 1.0 multiplier
+    private fun regularizeMultiplier(empiricalMultiplier: Double, count: Int, priorStrength: Double = 5.0): Double {
+        if (count <= 0) return 1.0
+        val beta = count.toDouble() / (count.toDouble() + priorStrength)
+        return 1.0 + beta * (empiricalMultiplier - 1.0)
+    }
+
     /**
      * Executes the predicting algorithm.
      * @param targetDate The date we are predicting for ("yyyy-MM-dd")
@@ -52,12 +59,12 @@ object PredictionEngine {
         val temps = if (targetDayHourlyTemp.size >= 24) targetDayHourlyTemp else List(24) { 15 }
         val wmos = if (targetDayHourlyWmo.size >= 24) targetDayHourlyWmo else List(24) { 0 }
 
-        // Step 1: Detect actual trip clusters from history to find personalized time windows
-        val activeWindows = getAdaptiveTimeWindows(allTrips, isWeekend)
-
         // Only evaluate past days/trips to avoid target leakage during active predictions
         val pastDays = allDays.filter { it.date < targetDate }
-        val pastTrips = allTrips.filter { it.date < targetDate }
+        val pastTrips = allTrips.filter { it.date < targetDate && it.endTime != null }
+
+        // Step 1: Detect actual trip clusters from 10-minute slot density mapping of past trips
+        val activeWindows = getAdaptiveTimeWindows(pastTrips, isWeekend)
 
         // Step 2: For each time window, calculate personal statistical probability
         activeWindows.forEachIndexed { idx, win ->
@@ -168,14 +175,19 @@ object PredictionEngine {
 
                 if (rainDays > 0) {
                     val pRain = (rainTrips + 1).toDouble() / (rainDays + 2).toDouble()
-                    rainMultiplier = pRain / pWindowBase
+                    val empiricalRainMultiplier = pRain / pWindowBase
+                    rainMultiplier = regularizeMultiplier(empiricalRainMultiplier, rainDays, priorStrength = 5.0)
                     
-                    if (rainMultiplier > 1.05) {
-                        weatherExplanations.add("Вопреки дождю в эти часы вы часто выходили ранее ($rainTrips из $rainDays раз)")
-                    } else if (rainMultiplier < 0.95) {
-                        weatherExplanations.add("При дожде вы обычно предпочитаете пересидеть дома ($rainTrips выходов за $rainDays дождливых дней)")
+                    if (rainDays >= 5) {
+                        if (rainMultiplier > 1.05) {
+                            weatherExplanations.add("Вопреки дождю в эти часы вы часто выходили ранее ($rainTrips из $rainDays раз)")
+                        } else if (rainMultiplier < 0.95) {
+                            weatherExplanations.add("При дожде вы обычно предпочитаете пересидеть дома ($rainTrips выходов за $rainDays дождливых дней)")
+                        } else {
+                            weatherExplanations.add("Дождь не влияет на вашу частоту выходов по статистике")
+                        }
                     } else {
-                        weatherExplanations.add("Дождь не влияет на вашу частоту выходов по статистике")
+                        weatherExplanations.add("Дождь отмечен в прогнозе, влияние калибруется (мало статистики: $rainDays дождливых дней)")
                     }
                 } else {
                     weatherExplanations.add("Влияние дождя не учтено: вы ещё ни разу не пользовались приложением в дождь в эти часы")
@@ -205,14 +217,19 @@ object PredictionEngine {
 
                 if (clearDays > 0) {
                     val pClear = (clearTrips + 1).toDouble() / (clearDays + 2).toDouble()
-                    clearingMultiplier = pClear / pWindowBase
+                    val empiricalClearingMultiplier = pClear / pWindowBase
+                    clearingMultiplier = regularizeMultiplier(empiricalClearingMultiplier, clearDays, priorStrength = 5.0)
                     
-                    if (clearingMultiplier > 1.05) {
-                        weatherExplanations.add("Вы склонны выходить сразу после окончания дождя ($clearTrips из $clearDays раз)")
-                    } else if (clearingMultiplier < 0.95) {
-                        weatherExplanations.add("После окончания дождя вы выходите реже обычного ($clearTrips из $clearDays раз)")
+                    if (clearDays >= 5) {
+                        if (clearingMultiplier > 1.05) {
+                            weatherExplanations.add("Вы склонны выходить сразу после окончания дождя ($clearTrips из $clearDays раз)")
+                        } else if (clearingMultiplier < 0.95) {
+                            weatherExplanations.add("После окончания дождя вы выходите реже обычного ($clearTrips из $clearDays раз)")
+                        } else {
+                            weatherExplanations.add("Прояснение после дождя не меняет вашу привычную активность")
+                        }
                     } else {
-                        weatherExplanations.add("Прояснение после дождя не меняет вашу привычную активность")
+                        weatherExplanations.add("Ожидается прояснение, влияние калибруется (мало статистики: $clearDays похожих дней)")
                     }
                 } else {
                     weatherExplanations.add("Эффект улучшения погоды не учтен: ранее таких ситуаций не происходило")
@@ -245,29 +262,34 @@ object PredictionEngine {
 
             if (tempDays > 0) {
                 val pTemp = (tempTrips + 1).toDouble() / (tempDays + 2).toDouble()
-                tempMultiplier = pTemp / pWindowBase
+                val empiricalTempMultiplier = pTemp / pWindowBase
+                tempMultiplier = regularizeMultiplier(empiricalTempMultiplier, tempDays, priorStrength = 5.0)
                 
-                if (tempMultiplier > 1.05) {
-                    val label = when (tempCategory) {
-                        "cold" -> "прохладную"
-                        "hot" -> "жаркую"
-                        else -> "комфортную"
+                if (tempDays >= 5) {
+                    if (tempMultiplier > 1.05) {
+                        val label = when (tempCategory) {
+                            "cold" -> "прохладную"
+                            "hot" -> "жаркую"
+                            else -> "комфортную"
+                        }
+                        weatherExplanations.add("Вы охотнее выходите в такую $label погоду ($tempTrips из $tempDays раз)")
+                    } else if (tempMultiplier < 0.95) {
+                        val label = when (tempCategory) {
+                            "cold" -> "холод"
+                            "hot" -> "жару"
+                            else -> "такую температуру"
+                        }
+                        weatherExplanations.add("Вы предпочитаете оставаться дома в $label ($tempTrips из $tempDays раз)")
                     }
-                    weatherExplanations.add("Вы охотнее выходите в такую $label погоду ($tempTrips из $tempDays раз)")
-                } else if (tempMultiplier < 0.95) {
-                    val label = when (tempCategory) {
-                        "cold" -> "холод"
-                        "hot" -> "жару"
-                        else -> "такую температуру"
-                    }
-                    weatherExplanations.add("Вы предпочитаете оставаться дома в $label ($tempTrips из $tempDays раз)")
+                } else {
+                    weatherExplanations.add("Влияние температуры калибруется (мало статистики: $tempDays дней с похожей погодой)")
                 }
             } else {
-                weatherExplanations.add("Статистика по температуре (${String.format("%.1f", avgTemp)}°C) за этот интервал отсутствует")
+                weatherExplanations.add("Статистика по температуре (около ${String.format("%.1f", avgTemp)}°C) за этот интервал отсутствует")
             }
 
             // Combine evidence multipliers under safety bounds (limit multipliers to prevent wild runaways)
-            val totalMultiplier = (rainMultiplier * clearingMultiplier * tempMultiplier).coerceIn(0.2, 3.0)
+            val totalMultiplier = (rainMultiplier * clearingMultiplier * tempMultiplier).coerceIn(0.3, 2.5)
             val finalProb = (baseProb * totalMultiplier).toInt().coerceIn(1, 99)
 
             if (weatherExplanations.isNotEmpty()) {
@@ -293,9 +315,9 @@ object PredictionEngine {
         return filtered.take(4)
     }
 
-    // Helper: extract adaptive intervals based on historical trip locations
-    private fun getAdaptiveTimeWindows(allTrips: List<Trip>, isWeekend: Boolean): List<AdaptiveWindow> {
-        if (allTrips.size < 3) {
+    // Helper: extract adaptive intervals based on 10-minute slot likelihoods
+    private fun getAdaptiveTimeWindows(pastTrips: List<Trip>, isWeekend: Boolean): List<AdaptiveWindow> {
+        if (pastTrips.size < 3) {
             // No history or too little history: return defaults depending on weekday/weekend
             return DEFAULT_WINDOWS.map { gw ->
                 AdaptiveWindow(
@@ -306,83 +328,62 @@ object PredictionEngine {
             }
         }
 
-        // If we have history, let's look at cluster centers!
-        // We will define 4 typical baskets and see where the user actually steps out:
-        // Basket 1: 08:00 - 12:00 (Morning)
-        // Basket 2: 12:00 - 15:30 (Midday)
-        // Basket 3: 15:30 - 19:30 (Evening)
-        // Basket 4: 19:30 - 22:00 (Night run)
+        // Divide 24 hours into 144 slots of 10 minutes each
+        val activityWeight = DoubleArray(144) { 0.0 }
 
-        val basket1 = mutableListOf<Trip>()
-        val basket2 = mutableListOf<Trip>()
-        val basket3 = mutableListOf<Trip>()
-        val basket4 = mutableListOf<Trip>()
-
-        allTrips.forEach { trip ->
+        pastTrips.forEach { trip ->
             val startMin = getMinutesOfDay(trip.startTime)
-            when (startMin) {
-                in 480 until 720 -> basket1.add(trip)   // 8:00 to 12:00
-                in 720 until 930 -> basket2.add(trip)   // 12:00 to 15:30
-                in 930 until 1170 -> basket3.add(trip)  // 15:30 to 19:30
-                in 1170 until 1320 -> basket4.add(trip) // 19:30 to 22:00
+            val s = (startMin / 10).coerceIn(0, 143)
+            
+            // Apply triangular smoothing weight to neighboring slots
+            for (offset in -2..2) {
+                val idx = s + offset
+                if (idx in 0..143) {
+                    val weight = when (Math.abs(offset)) {
+                        0 -> 1.0
+                        1 -> 0.6
+                        2 -> 0.3
+                        else -> 0.0
+                    }
+                    activityWeight[idx] += weight
+                }
             }
         }
 
         val result = mutableListOf<AdaptiveWindow>()
-
-        // Analyze Basket 1
-        if (basket1.isNotEmpty()) {
-            val times = calculateAverages(basket1)
-            result.add(AdaptiveWindow(times.first, times.second, 45))
-        } else {
-            result.add(AdaptiveWindow("10:00", "11:30", 30))
-        }
-
-        // Analyze Basket 2
-        if (basket2.isNotEmpty()) {
-            val times = calculateAverages(basket2)
-            result.add(AdaptiveWindow(times.first, times.second, 55))
-        } else {
-            result.add(AdaptiveWindow("14:30", "16:00", 40))
-        }
-
-        // Analyze Basket 3
-        if (basket3.isNotEmpty()) {
-            val times = calculateAverages(basket3)
-            result.add(AdaptiveWindow(times.first, times.second, 75))
-        } else {
-            result.add(AdaptiveWindow("18:00", "19:45", 65))
-        }
-
-        // Analyze Basket 4
-        if (basket4.isNotEmpty()) {
-            val times = calculateAverages(basket4)
-            result.add(AdaptiveWindow(times.first, times.second, 30))
-        } else {
-            result.add(AdaptiveWindow("20:00", "20:55", 20))
+        var i = 0
+        val threshold = 0.25
+        
+        while (i < 144) {
+            if (activityWeight[i] >= threshold) {
+                val startSlot = i
+                var endSlot = i
+                
+                // Merge consecutive active slots up to 18 slots (3 hours limit per window)
+                while (i + 1 < 144 && activityWeight[i + 1] >= threshold && (i + 1 - startSlot) <= 18) {
+                    i++
+                    endSlot = i
+                }
+                
+                val startMin = startSlot * 10
+                val endMin = (endSlot + 1) * 10
+                
+                // Calculate beautiful dynamic default probability based on average/max weight of slots
+                val maxWeight = activityWeight.slice(startSlot..endSlot).maxOrNull() ?: 1.0
+                val dynamicProb = (25 + (maxWeight * 15).toInt()).coerceIn(25, 85)
+                
+                result.add(
+                    AdaptiveWindow(
+                        startTime = minutesToTime(startMin),
+                        endTime = minutesToTime(endMin),
+                        defaultProb = dynamicProb
+                    )
+                )
+            }
+            i++
         }
 
         return result
-    }
-
-    private fun calculateAverages(trips: List<Trip>): Pair<String, String> {
-        var startSum = 0
-        var endSum = 0
-        trips.forEach {
-            val startMin = getMinutesOfDay(it.startTime)
-            startSum += startMin
-            
-            val endMin = if (it.endTime != null) {
-                getMinutesOfDay(it.endTime)
-            } else {
-                startMin + 45 // assume 45 minutes duration if currently open
-            }
-            endSum += endMin
-        }
-        val avgStart = startSum / trips.size
-        val avgEnd = (endSum / trips.size).coerceAtLeast(avgStart + 15) // at least 15 min trip
-        
-        return Pair(minutesToTime(avgStart), minutesToTime(avgEnd))
     }
 
     private fun minutesToTime(minutes: Int): String {

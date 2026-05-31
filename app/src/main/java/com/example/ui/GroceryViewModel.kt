@@ -184,7 +184,64 @@ class GroceryViewModel(application: Application) : AndroidViewModel(application)
             repository.ensureDayRecordExists(todayDate, getDayOfWeekInt(0), city.name, city.latitude, city.longitude, forceRefresh)
             repository.ensureDayRecordExists(tomorrowDate, getDayOfWeekInt(1), city.name, city.latitude, city.longitude, forceRefresh)
 
+            // Retrospective gap-filler for all previous days so that offline/missed days without trips are perfectly logged
+            fillPastDayGapsRetroactively()
+
             updatePredictions()
+        }
+    }
+
+    private suspend fun fillPastDayGapsRetroactively() {
+        try {
+            val allTrips = db.groceryDao().getAllTrips()
+            val allDayRecords = db.groceryDao().getAllDayRecords()
+            
+            // Find the earliest date in database across day records or trips
+            val earliestDateStr = (allDayRecords.map { it.date } + allTrips.map { it.date }).minOrNull()
+            if (earliestDateStr != null) {
+                val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+                val startCal = Calendar.getInstance().apply {
+                    time = sdf.parse(earliestDateStr) ?: Date()
+                }
+                val yesterdayStr = getFormattedDate(-1)
+                val yesterdayDate = sdf.parse(yesterdayStr) ?: Date()
+                
+                val endCal = Calendar.getInstance().apply {
+                    time = yesterdayDate
+                }
+                
+                val city = _selectedCity.value
+                
+                while (!startCal.after(endCal)) {
+                    val dateStr = sdf.format(startCal.time)
+                    val existing = db.groceryDao().getDayRecord(dateStr)
+                    if (existing == null) {
+                        val calDay = startCal.get(Calendar.DAY_OF_WEEK)
+                        var dayOfWeekInt = calDay - 1
+                        if (dayOfWeekInt <= 0) dayOfWeekInt = 7
+                        
+                        Log.d("GroceryViewModel", "Retroactively filling missing day record: $dateStr")
+                        repository.ensureDayRecordExists(
+                            date = dateStr,
+                            dayOfWeek = dayOfWeekInt,
+                            cityName = city.name,
+                            latitude = city.latitude,
+                            longitude = city.longitude,
+                            forceRefresh = false
+                        )
+                    } else {
+                        // Ensure hadTrips is accurate based on current trips count
+                        val tripsForDay = db.groceryDao().getTripsForDay(dateStr)
+                        val shouldHaveTrips = tripsForDay.isNotEmpty()
+                        if (existing.hadTrips != shouldHaveTrips) {
+                            db.groceryDao().insertDayRecord(existing.copy(hadTrips = shouldHaveTrips))
+                        }
+                    }
+                    startCal.add(Calendar.DAY_OF_YEAR, 1)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("GroceryViewModel", "Retrospective gap filling failed: ${e.message}", e)
         }
     }
 
@@ -268,6 +325,13 @@ class GroceryViewModel(application: Application) : AndroidViewModel(application)
                 val serviceIntent = Intent(context, TrackerService::class.java)
                 context.stopService(serviceIntent)
 
+                // Sync hadTrips flag in today's day record
+                val todayDate = getFormattedDate(0)
+                val dayRec = db.groceryDao().getDayRecord(todayDate)
+                if (dayRec != null && !dayRec.hadTrips) {
+                    db.groceryDao().insertDayRecord(dayRec.copy(hadTrips = true))
+                }
+
                 updatePredictions()
             }
         }
@@ -320,6 +384,13 @@ class GroceryViewModel(application: Application) : AndroidViewModel(application)
             )
 
             repository.insertTrip(trip)
+
+            // Ensure the specific DayRecord's hadTrips gets set to true immediately
+            val dayRecToUpdate = db.groceryDao().getDayRecord(date)
+            if (dayRecToUpdate != null && !dayRecToUpdate.hadTrips) {
+                db.groceryDao().insertDayRecord(dayRecToUpdate.copy(hadTrips = true))
+            }
+
             updatePredictions()
         }
     }
@@ -365,6 +436,18 @@ class GroceryViewModel(application: Application) : AndroidViewModel(application)
     fun deleteTrip(trip: Trip) {
         viewModelScope.launch(Dispatchers.IO) {
             repository.deleteTrip(trip)
+            
+            // Recalculate hadTrips for this specific day
+            val dateStr = trip.date
+            val dayRec = db.groceryDao().getDayRecord(dateStr)
+            if (dayRec != null) {
+                val remainingTrips = db.groceryDao().getTripsForDay(dateStr)
+                val hadTripsNow = remainingTrips.isNotEmpty()
+                if (dayRec.hadTrips != hadTripsNow) {
+                    db.groceryDao().insertDayRecord(dayRec.copy(hadTrips = hadTripsNow))
+                }
+            }
+
             updatePredictions()
         }
     }
