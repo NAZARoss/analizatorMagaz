@@ -15,7 +15,8 @@ data class DayRecord(
     val hourlyTemperatures: String, // e.g. "12,14,15,15,14..." (24 items)
     val hourlyConditions: String,   // WMO weather codes e.g. "0,1,2,51,3..." (24 items)
     val hadTrips: Boolean = false,
-    val isManualEdit: Boolean = false
+    val isManualEdit: Boolean = false,
+    val weatherSource: String = "real" // "real", "simulated", or "unknown"
 )
 
 @Entity(tableName = "trips")

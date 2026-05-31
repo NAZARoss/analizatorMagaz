@@ -54,6 +54,18 @@ interface WeatherService {
     ): WeatherResponse
 }
 
+interface ArchiveService {
+    @GET("v1/archive")
+    suspend fun getArchive(
+        @Query("latitude") latitude: Double,
+        @Query("longitude") longitude: Double,
+        @Query("start_date") startDate: String,
+        @Query("end_date") endDate: String,
+        @Query("hourly") hourly: String = "temperature_2m,weather_code",
+        @Query("timezone") timezone: String = "auto"
+    ): WeatherResponse
+}
+
 interface GeocodingService {
     @GET("v1/search")
     suspend fun searchCity(
@@ -83,6 +95,15 @@ object WeatherApiClient {
             .addConverterFactory(MoshiConverterFactory.create(moshi))
             .build()
             .create(WeatherService::class.java)
+    }
+
+    val archiveService: ArchiveService by lazy {
+        Retrofit.Builder()
+            .baseUrl("https://archive-api.open-meteo.com/")
+            .client(okHttpClient)
+            .addConverterFactory(MoshiConverterFactory.create(moshi))
+            .build()
+            .create(ArchiveService::class.java)
     }
 
     val geocodingService: GeocodingService by lazy {

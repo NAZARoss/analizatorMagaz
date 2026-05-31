@@ -158,6 +158,7 @@ object PredictionEngine {
                 var rainDays = 0
                 var rainTrips = 0
                 pastDays.forEach { day ->
+                    if (day.weatherSource == "unknown") return@forEach
                     val dayWmos = parseCommaString(day.hourlyConditions)
                     if (dayWmos.size >= 24) {
                         val wasRainInHistWindow = dayWmos.subList(startHour, (endHour + 1).coerceAtMost(24)).any { WeatherHelper.isRainCode(it) }
@@ -199,6 +200,7 @@ object PredictionEngine {
                 var clearDays = 0
                 var clearTrips = 0
                 pastDays.forEach { day ->
+                    if (day.weatherSource == "unknown") return@forEach
                     val dayWmos = parseCommaString(day.hourlyConditions)
                     if (dayWmos.size >= 24) {
                         val histWasRainyEarlier = dayWmos.subList(hoursBefore, startHour).any { WeatherHelper.isRainCode(it) }
@@ -240,6 +242,7 @@ object PredictionEngine {
             var tempDays = 0
             var tempTrips = 0
             pastDays.forEach { day ->
+                if (day.weatherSource == "unknown") return@forEach
                 val dayTemps = parseCommaString(day.hourlyTemperatures)
                 if (dayTemps.size >= 24) {
                     val histAvgTemp = dayTemps.subList(startHour, (endHour + 1).coerceAtMost(24)).average()
