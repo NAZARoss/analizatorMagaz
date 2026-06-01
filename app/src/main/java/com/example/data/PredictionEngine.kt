@@ -293,14 +293,25 @@ object PredictionEngine {
                         }
 
                         val isWeekendInt = if (day.dayOfWeek == 6 || day.dayOfWeek == 7) 1.0 else 0.0
-                        val dowVal = day.dayOfWeek.toDouble()
+                        val dowOneHot = DoubleArray(7) { i -> if (day.dayOfWeek == i + 1) 1.0 else 0.0 }
 
-                        trainingSamples.add(doubleArrayOf(isWeekendInt, isRainyInt, isClearingInt, tempCatVal, dowVal))
+                        trainingSamples.add(doubleArrayOf(
+                            isWeekendInt, isRainyInt, isClearingInt, tempCatVal,
+                            dowOneHot[0], dowOneHot[1], dowOneHot[2], dowOneHot[3], dowOneHot[4], dowOneHot[5], dowOneHot[6]
+                        ))
                         trainingTargets.add(if (hasTripInWindow) 1.0 else 0.0)
                     }
 
+                    // Adaptive trees/lr depending on number of training samples
+                    val n = trainingDays.size
+                    val (trees, lr) = when {
+                        n < 10  -> Pair(4, 0.15)
+                        n < 30  -> Pair(6, 0.25)
+                        else    -> Pair(8, 0.40)
+                    }
+
                     // Train XGBoost Model
-                    val xgb = XGBoostModel(numTrees = 8, learningRate = 0.4, maxDepth = 2)
+                    val xgb = XGBoostModel(numTrees = trees, learningRate = lr, maxDepth = 2)
                     xgb.train(trainingSamples, trainingTargets.toDoubleArray())
 
                     // Target features
@@ -309,18 +320,20 @@ object PredictionEngine {
                         avgTemp > 24 -> 2.0
                         else -> 1.0
                     }
+                    val targetDowOneHot = DoubleArray(7) { i -> if (targetDayOfWeek == i + 1) 1.0 else 0.0 }
                     val targetFeatures = doubleArrayOf(
                         if (isWeekend) 1.0 else 0.0,
                         if (isRainyForecast) 1.0 else 0.0,
                         if (isRainClearingForecast) 1.0 else 0.0,
                         tempCatVal,
-                        targetDayOfWeek.toDouble()
+                        targetDowOneHot[0], targetDowOneHot[1], targetDowOneHot[2],
+                        targetDowOneHot[3], targetDowOneHot[4], targetDowOneHot[5], targetDowOneHot[6]
                     )
 
                     val prob = xgb.predict(targetFeatures)
                     val finalProb = (prob * 100).toInt().coerceIn(1, 99)
 
-                    var reasons = "XGBoost (Extreme Gradient Boosting), обучено деревьев: 8. Выделенные факторы: "
+                    var reasons = "XGBoost (Extreme Gradient Boosting), обучено деревьев: $trees. Выделенные факторы: "
                     val factorImportance = mutableListOf<String>()
                     if (isWeekend) factorImportance.add("выходной день") else factorImportance.add("будний день")
                     if (isRainyForecast) factorImportance.add("осадки")
@@ -410,7 +423,7 @@ object PredictionEngine {
             if (isRainyForecast) {
                 var rainDays = 0
                 var rainTrips = 0
-                pastDays.forEach { day ->
+                pastDays.filter { it.dayOfWeek == targetDayOfWeek }.forEach { day ->
                     if (day.weatherSource == "unknown") return@forEach
                     val dayWmos = parseCommaString(day.hourlyConditions)
                     if (dayWmos.size >= 24) {
@@ -452,7 +465,7 @@ object PredictionEngine {
             if (isRainClearingForecast) {
                 var clearDays = 0
                 var clearTrips = 0
-                pastDays.forEach { day ->
+                pastDays.filter { it.dayOfWeek == targetDayOfWeek }.forEach { day ->
                     if (day.weatherSource == "unknown") return@forEach
                     val dayWmos = parseCommaString(day.hourlyConditions)
                     if (dayWmos.size >= 24) {
@@ -494,7 +507,7 @@ object PredictionEngine {
             // 3. Temperature category feature
             var tempDays = 0
             var tempTrips = 0
-            pastDays.forEach { day ->
+            pastDays.filter { it.dayOfWeek == targetDayOfWeek }.forEach { day ->
                 if (day.weatherSource == "unknown") return@forEach
                 val dayTemps = parseCommaString(day.hourlyTemperatures)
                 if (dayTemps.size >= 24) {
@@ -643,8 +656,9 @@ object PredictionEngine {
     }
 
     private fun minutesToTime(minutes: Int): String {
-        val h = (minutes / 60) % 24
-        val m = minutes % 60
+        val clamped = minutes.coerceIn(0, 1439)
+        val h = clamped / 60
+        val m = clamped % 60
         return String.format("%02d:%02d", h, m)
     }
 

@@ -310,7 +310,7 @@ class GroceryViewModel(application: Application) : AndroidViewModel(application)
                 startWeatherCondition = currentCondition
             )
 
-            repository.insertTrip(newTrip)
+            repository.insertTrip(newTrip, _selectedCity.value.name)
 
             // Start tracker service for foreground execution
             val serviceIntent = Intent(context, TrackerService::class.java)
@@ -330,7 +330,7 @@ class GroceryViewModel(application: Application) : AndroidViewModel(application)
             if (active != null) {
                 val stopTime = System.currentTimeMillis()
                 val updated = active.copy(endTime = stopTime)
-                repository.updateTrip(updated)
+                repository.updateTrip(updated, _selectedCity.value.name)
 
                 // Stop tracker service
                 val serviceIntent = Intent(context, TrackerService::class.java)
@@ -394,7 +394,7 @@ class GroceryViewModel(application: Application) : AndroidViewModel(application)
                 startWeatherCondition = currentCondition
             )
 
-            repository.insertTrip(trip)
+            repository.insertTrip(trip, _selectedCity.value.name)
 
             // Ensure the specific DayRecord's hadTrips gets set to true immediately
             val dayRecToUpdate = db.groceryDao().getDayRecord(date)
@@ -439,14 +439,14 @@ class GroceryViewModel(application: Application) : AndroidViewModel(application)
                 endTime = calEnd.timeInMillis
             )
 
-            repository.updateTrip(updated)
+            repository.updateTrip(updated, _selectedCity.value.name)
             updatePredictions()
         }
     }
 
     fun deleteTrip(trip: Trip) {
         viewModelScope.launch(Dispatchers.IO) {
-            repository.deleteTrip(trip)
+            repository.deleteTrip(trip, _selectedCity.value.name)
             
             // Recalculate hadTrips for this specific day
             val dateStr = trip.date

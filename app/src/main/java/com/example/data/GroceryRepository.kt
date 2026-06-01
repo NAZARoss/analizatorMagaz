@@ -27,27 +27,27 @@ class GroceryRepository(private val groceryDao: GroceryDao) {
         groceryDao.insertDayRecord(record)
     }
 
-    suspend fun insertTrip(trip: Trip): Long = withContext(Dispatchers.IO) {
+    suspend fun insertTrip(trip: Trip, cityName: String = "Неизвестно"): Long = withContext(Dispatchers.IO) {
         val id = groceryDao.insertTrip(trip)
-        updateDayHasTrips(trip.date)
+        updateDayHasTrips(trip.date, cityName)
         id
     }
 
-    suspend fun updateTrip(trip: Trip) = withContext(Dispatchers.IO) {
+    suspend fun updateTrip(trip: Trip, cityName: String = "Неизвестно") = withContext(Dispatchers.IO) {
         groceryDao.updateTrip(trip)
-        updateDayHasTrips(trip.date)
+        updateDayHasTrips(trip.date, cityName)
     }
 
-    suspend fun deleteTrip(trip: Trip) = withContext(Dispatchers.IO) {
+    suspend fun deleteTrip(trip: Trip, cityName: String = "Неизвестно") = withContext(Dispatchers.IO) {
         groceryDao.deleteTrip(trip)
-        updateDayHasTrips(trip.date)
+        updateDayHasTrips(trip.date, cityName)
     }
 
     suspend fun getActiveTrip(): Trip? = withContext(Dispatchers.IO) {
         groceryDao.getActiveTrip()
     }
 
-    private suspend fun updateDayHasTrips(date: String) {
+    private suspend fun updateDayHasTrips(date: String, cityName: String = "Неизвестно") {
         val trips = groceryDao.getTripsForDay(date)
         val dayRecord = groceryDao.getDayRecord(date)
         if (dayRecord != null) {
@@ -67,7 +67,7 @@ class GroceryRepository(private val groceryDao: GroceryDao) {
             val dummyRecord = DayRecord(
                 date = date,
                 dayOfWeek = dayOfWeek,
-                cityName = "Москва",
+                cityName = cityName,
                 highTemp = 18,
                 lowTemp = 10,
                 hourlyTemperatures = List(24) { 15 }.joinToString(","),
