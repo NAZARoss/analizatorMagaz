@@ -272,8 +272,7 @@ object PredictionEngine {
                     trainingDays.forEach { day ->
                         val dayTrips = pastTrips.filter { it.date == day.date }
                         val hasTripInWindow = dayTrips.any { trip ->
-                            val tripStartMin = getMinutesOfDay(trip.startTime)
-                            tripStartMin in startMin..endMin
+                            tripOverlapsWindow(trip, startMin, endMin)
                         }
                         
                         val dayWmos = parseCommaString(day.hourlyConditions)
@@ -393,8 +392,7 @@ object PredictionEngine {
                 matchingDays.forEach { day ->
                     val dayTrips = pastTrips.filter { it.date == day.date }
                     val hasTripInWindow = dayTrips.any { trip ->
-                        val tripStartMin = getMinutesOfDay(trip.startTime)
-                        tripStartMin in startMin..endMin
+                        tripOverlapsWindow(trip, startMin, endMin)
                     }
                     if (hasTripInWindow) tripsOnMatchingDaysCount++
                 }
@@ -408,8 +406,7 @@ object PredictionEngine {
                 pastDays.forEach { day ->
                     val dayTrips = pastTrips.filter { it.date == day.date }
                     val hasTripInWindow = dayTrips.any { trip ->
-                        val tripStartMin = getMinutesOfDay(trip.startTime)
-                        tripStartMin in startMin..endMin
+                        tripOverlapsWindow(trip, startMin, endMin)
                     }
                     if (hasTripInWindow) overallTripsCount++
                 }
@@ -440,8 +437,7 @@ object PredictionEngine {
                             rainDays++
                             val dayTrips = pastTrips.filter { it.date == day.date }
                             val hasTripInWindow = dayTrips.any { trip ->
-                                val tripStartMin = getMinutesOfDay(trip.startTime)
-                                tripStartMin in startMin..endMin
+                                tripOverlapsWindow(trip, startMin, endMin)
                             }
                             if (hasTripInWindow) rainTrips++
                         }
@@ -483,8 +479,7 @@ object PredictionEngine {
                             clearDays++
                             val dayTrips = pastTrips.filter { it.date == day.date }
                             val hasTripInWindow = dayTrips.any { trip ->
-                                val tripStartMin = getMinutesOfDay(trip.startTime)
-                                tripStartMin in startMin..endMin
+                                tripOverlapsWindow(trip, startMin, endMin)
                             }
                             if (hasTripInWindow) clearTrips++
                         }
@@ -529,8 +524,7 @@ object PredictionEngine {
                         tempDays++
                         val dayTrips = pastTrips.filter { it.date == day.date }
                         val hasTripInWindow = dayTrips.any { trip ->
-                            val tripStartMin = getMinutesOfDay(trip.startTime)
-                            tripStartMin in startMin..endMin
+                            tripOverlapsWindow(trip, startMin, endMin)
                         }
                         if (hasTripInWindow) tempTrips++
                     }
@@ -689,6 +683,13 @@ object PredictionEngine {
             return h * 60 + m
         }
         return 0
+    }
+
+    private fun tripOverlapsWindow(trip: Trip, windowStart: Int, windowEnd: Int): Boolean {
+        val tripStart = getMinutesOfDay(trip.startTime)
+        val rawEnd = trip.endTime?.let { getMinutesOfDay(it) } ?: tripStart
+        val tripEnd = if (rawEnd < tripStart) rawEnd + 1440 else rawEnd
+        return tripStart <= windowEnd && tripEnd >= windowStart
     }
 
     private fun getMinutesOfDay(timestamp: Long): Int {
