@@ -34,7 +34,8 @@ class XGBNode(
 class XGBTreeBuilder(
     val maxDepth: Int = 2,
     val lambda: Double = 1.0,
-    val minChildWeight: Double = 0.1
+    val minChildWeight: Double = 1.0,
+    val gamma: Double = 0.0
 ) {
     fun buildTree(
         samples: List<DoubleArray>,
@@ -92,7 +93,7 @@ class XGBTreeBuilder(
             }
         }
 
-        if (bestFeatureIdx == -1 || bestGain <= 1e-5) {
+        if (bestFeatureIdx == -1 || bestGain <= gamma) {
             val weight = -sumG / (sumH + lambda)
             return XGBNode(weight = weight)
         }
@@ -105,7 +106,7 @@ class XGBTreeBuilder(
             threshold = bestThreshold,
             left = leftChild,
             right = rightChild,
-            weight = -sumG / (sumH + lambda)
+            weight = 0.0
         )
     }
 }
@@ -114,7 +115,9 @@ class XGBoostModel(
     val numTrees: Int = 8,
     val learningRate: Double = 0.4,
     val maxDepth: Int = 2,
-    val lambda: Double = 1.0
+    val lambda: Double = 1.0,
+    val minChildWeight: Double = 1.0,
+    val gamma: Double = 0.0
 ) {
     private val trees = mutableListOf<XGBNode>()
     private var baseScore: Double = 0.0
@@ -131,7 +134,12 @@ class XGBoostModel(
         val g = DoubleArray(n)
         val h = DoubleArray(n)
 
-        val builder = XGBTreeBuilder(maxDepth = maxDepth, lambda = lambda)
+        val builder = XGBTreeBuilder(
+            maxDepth = maxDepth,
+            lambda = lambda,
+            minChildWeight = minChildWeight,
+            gamma = gamma
+        )
 
         for (treeIdx in 0 until numTrees) {
             for (i in 0 until n) {
