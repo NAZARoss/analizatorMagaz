@@ -1024,6 +1024,126 @@ fun SettingsScreen(viewModel: GroceryViewModel, onCityClick: () -> Unit) {
             }
         }
 
+        // Prediction Model Selector Card
+        item {
+            val predictionModel by viewModel.predictionModel.collectAsState()
+            
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                ),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                shape = RoundedCornerShape(24.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "МОДЕЛЬ ПРЕДСКАЗАНИЙ ВЫХОДОВ".uppercase(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.secondary,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.1.sp
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    
+                    // Option 1: Bayes Adaptive
+                    val isBayes = predictionModel == "bayes"
+                    Surface(
+                        onClick = { viewModel.setPredictionModel("bayes") },
+                        modifier = Modifier.fillMaxWidth().testTag("model_type_bayes"),
+                        shape = RoundedCornerShape(16.dp),
+                        color = if (isBayes) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f) else Color.Transparent,
+                        border = BorderStroke(
+                            width = if (isBayes) 2.dp else 1.dp,
+                            color = if (isBayes) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = isBayes,
+                                onClick = { viewModel.setPredictionModel("bayes") },
+                                colors = RadioButtonDefaults.colors(selectedColor = MaterialTheme.colorScheme.primary)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Адаптивный Байес (По умолчанию)",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isBayes) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Текущая адаптивная модель на базе байесовского регуляризованного вывода. Стабильно оценивает вероятности даже на малых данных.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                    
+                    Spacer(modifier = Modifier.height(12.dp))
+                    
+                    // Option 2: XGBoost
+                    val isXGB = predictionModel == "xgboost"
+                    Surface(
+                        onClick = { viewModel.setPredictionModel("xgboost") },
+                        modifier = Modifier.fillMaxWidth().testTag("model_type_xgboost"),
+                        shape = RoundedCornerShape(16.dp),
+                        color = if (isXGB) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f) else Color.Transparent,
+                        border = BorderStroke(
+                            width = if (isXGB) 2.dp else 1.dp,
+                            color = if (isXGB) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = isXGB,
+                                onClick = { viewModel.setPredictionModel("xgboost") },
+                                colors = RadioButtonDefaults.colors(selectedColor = MaterialTheme.colorScheme.primary)
+                            )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = "XGBoost Classifier",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isXGB) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.tertiaryContainer,
+                                        shape = RoundedCornerShape(6.dp)
+                                    ) {
+                                        Text(
+                                            text = "ML",
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Ансамбль деревьев решений с градиентным бустингом (оценка синергии погоды, времени и типа дня). Обучается локально прямо на вашем смартфоне.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Section: System diagnostics & testing triggers (Блок 2 & Блок 5)
         item {
             Card(

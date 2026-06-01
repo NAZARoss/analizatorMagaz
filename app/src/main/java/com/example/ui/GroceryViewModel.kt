@@ -43,6 +43,16 @@ class GroceryViewModel(application: Application) : AndroidViewModel(application)
     private val _selectedCity = MutableStateFlow(loadSavedCity())
     val selectedCity: StateFlow<City> = _selectedCity.asStateFlow()
 
+    // Selected prediction model: "bayes" or "xgboost"
+    private val _predictionModel = MutableStateFlow(sharedPrefs.getString("prediction_model", "bayes") ?: "bayes")
+    val predictionModel: StateFlow<String> = _predictionModel.asStateFlow()
+
+    fun setPredictionModel(model: String) {
+        _predictionModel.value = model
+        sharedPrefs.edit().putString("prediction_model", model).apply()
+        updatePredictions()
+    }
+
     private fun loadSavedCity(): City {
         val name = sharedPrefs.getString("city_name", null)
         val lat = sharedPrefs.getFloat("city_lat", -999f)
@@ -274,7 +284,8 @@ class GroceryViewModel(application: Application) : AndroidViewModel(application)
                     targetDayHourlyTemp = temps,
                     targetDayHourlyWmo = wmos,
                     allDays = allDays,
-                    allTrips = allTrips
+                    allTrips = allTrips,
+                    modelType = _predictionModel.value
                 )
                 _predictions.value = results
             } else {

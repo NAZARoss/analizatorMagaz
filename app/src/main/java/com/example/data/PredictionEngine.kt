@@ -11,6 +11,159 @@ data class Prediction(
     val reason: String     // Detailed text explanation
 )
 
+class XGBNode(
+    val featureIdx: Int = -1,
+    val threshold: Double = 0.0,
+    val left: XGBNode? = null,
+    val right: XGBNode? = null,
+    val weight: Double = 0.0
+) {
+    val isLeaf: Boolean get() = left == null && right == null
+
+    fun predict(features: DoubleArray): Double {
+        if (isLeaf) return weight
+        val value = features[featureIdx]
+        return if (value <= threshold) {
+            left?.predict(features) ?: weight
+        } else {
+            right?.predict(features) ?: weight
+        }
+    }
+}
+
+class XGBTreeBuilder(
+    val maxDepth: Int = 2,
+    val lambda: Double = 1.0,
+    val minChildWeight: Double = 0.1
+) {
+    fun buildTree(
+        samples: List<DoubleArray>,
+        g: DoubleArray,
+        h: DoubleArray,
+        indices: List<Int>,
+        depth: Int = 0
+    ): XGBNode {
+        val sumG = indices.sumOf { g[it] }
+        val sumH = indices.sumOf { h[it] }
+
+        if (depth >= maxDepth || indices.size < 2 || sumH < minChildWeight) {
+            val weight = -sumG / (sumH + lambda)
+            return XGBNode(weight = weight)
+        }
+
+        var bestGain = 0.0
+        var bestFeatureIdx = -1
+        var bestThreshold = 0.0
+        var bestLeftIndices = emptyList<Int>()
+        var bestRightIndices = emptyList<Int>()
+
+        val numFeatures = samples.first().size
+
+        for (featIdx in 0 until numFeatures) {
+            val values = indices.map { samples[it][featIdx] }.distinct().sorted()
+            if (values.size <= 1) continue
+
+            for (splitValue in values) {
+                val left = indices.filter { samples[it][featIdx] <= splitValue }
+                val right = indices.filter { samples[it][featIdx] > splitValue }
+
+                if (left.isEmpty() || right.isEmpty()) continue
+
+                val gL = left.sumOf { g[it] }
+                val hL = left.sumOf { h[it] }
+                val gR = right.sumOf { g[it] }
+                val hR = right.sumOf { h[it] }
+
+                if (hL < minChildWeight || hR < minChildWeight) continue
+
+                val gain = 0.5 * (
+                    (gL * gL) / (hL + lambda) +
+                    (gR * gR) / (hR + lambda) -
+                    (sumG * sumG) / (sumH + lambda)
+                )
+
+                if (gain > bestGain) {
+                    bestGain = gain
+                    bestFeatureIdx = featIdx
+                    bestThreshold = splitValue
+                    bestLeftIndices = left
+                    bestRightIndices = right
+                }
+            }
+        }
+
+        if (bestFeatureIdx == -1 || bestGain <= 1e-5) {
+            val weight = -sumG / (sumH + lambda)
+            return XGBNode(weight = weight)
+        }
+
+        val leftChild = buildTree(samples, g, h, bestLeftIndices, depth + 1)
+        val rightChild = buildTree(samples, g, h, bestRightIndices, depth + 1)
+        
+        return XGBNode(
+            featureIdx = bestFeatureIdx,
+            threshold = bestThreshold,
+            left = leftChild,
+            right = rightChild,
+            weight = -sumG / (sumH + lambda)
+        )
+    }
+}
+
+class XGBoostModel(
+    val numTrees: Int = 8,
+    val learningRate: Double = 0.4,
+    val maxDepth: Int = 2,
+    val lambda: Double = 1.0
+) {
+    private val trees = mutableListOf<XGBNode>()
+    private var baseScore: Double = 0.0
+
+    fun train(samples: List<DoubleArray>, targets: DoubleArray) {
+        trees.clear()
+        if (samples.isEmpty()) return
+
+        val n = samples.size
+        val meanY = targets.average().coerceIn(0.01, 0.99)
+        baseScore = ln(meanY / (1.0 - meanY))
+
+        val currentLogOdds = DoubleArray(n) { baseScore }
+        val g = DoubleArray(n)
+        val h = DoubleArray(n)
+
+        val builder = XGBTreeBuilder(maxDepth = maxDepth, lambda = lambda)
+
+        for (treeIdx in 0 until numTrees) {
+            for (i in 0 until n) {
+                val p = 1.0 / (1.0 + exp(-currentLogOdds[i]))
+                g[i] = p - targets[i]
+                h[i] = p * (1.0 - p)
+            }
+
+            val root = builder.buildTree(samples, g, h, (0 until n).toList())
+            trees.add(root)
+
+            for (i in 0 until n) {
+                currentLogOdds[i] += learningRate * root.predict(samples[i])
+            }
+        }
+    }
+
+    private fun ln(x: Double): Double = java.lang.Math.log(x)
+    private fun exp(x: Double): Double = java.lang.Math.exp(x)
+
+    fun predict(features: DoubleArray): Double {
+        if (trees.isEmpty()) {
+            return 1.0 / (1.0 + exp(-baseScore))
+        }
+        var logOdds = baseScore
+        for (tree in trees) {
+            logOdds += learningRate * tree.predict(features)
+        }
+        return 1.0 / (1.0 + exp(-logOdds))
+    }
+}
+
 object PredictionEngine {
 
     // Defines initial default time windows to predict when there is no/little history
@@ -50,7 +203,8 @@ object PredictionEngine {
         targetDayHourlyTemp: List<Int>,
         targetDayHourlyWmo: List<Int>,
         allDays: List<DayRecord>,
-        allTrips: List<Trip>
+        allTrips: List<Trip>,
+        modelType: String = "bayes"
     ): List<Prediction> {
         val isWeekend = targetDayOfWeek == 6 || targetDayOfWeek == 7
         val predictions = mutableListOf<Prediction>()
@@ -87,6 +241,105 @@ object PredictionEngine {
                 avgTemp < 5 -> "cold"       // Cold (< 5°C)
                 avgTemp > 24 -> "hot"       // Hot (> 24°C)
                 else -> "pleasant"          // Comfort zone (5°C to 24°C)
+            }
+
+            if (modelType == "xgboost") {
+                val trainingDays = pastDays.filter { it.weatherSource != "unknown" }
+                if (trainingDays.size < 2) {
+                    val finalProb = win.defaultProb
+                    val explanation = "Ожидание достаточного количества данных для калибровки XGBoost (нужно хотя бы 2 дня наблюдений). Используется базовый ориентир."
+                    predictions.add(
+                        Prediction(
+                            index = idx + 1,
+                            probability = finalProb,
+                            startTime = win.startTime,
+                            endTime = win.endTime,
+                            reason = explanation
+                        )
+                    )
+                } else {
+                    val trainingSamples = mutableListOf<DoubleArray>()
+                    val trainingTargets = mutableListOf<Double>()
+
+                    trainingDays.forEach { day ->
+                        val dayTrips = pastTrips.filter { it.date == day.date }
+                        val hasTripInWindow = dayTrips.any { trip ->
+                            val tripStartMin = getMinutesOfDay(trip.startTime)
+                            tripStartMin in startMin..endMin
+                        }
+                        
+                        val dayWmos = parseCommaString(day.hourlyConditions)
+                        val wasRainInHistWindow = if (dayWmos.size >= 24) {
+                            dayWmos.subList(startHour, (endHour + 1).coerceAtMost(24)).any { WeatherHelper.isRainCode(it) }
+                        } else false
+                        val isRainyInt = if (wasRainInHistWindow) 1.0 else 0.0
+
+                        val histWasRainyEarlier = if (dayWmos.size >= 24) {
+                            dayWmos.subList(hoursBefore, startHour).any { WeatherHelper.isRainCode(it) }
+                        } else false
+                        val histIsDryNow = if (dayWmos.size >= 24) {
+                            !dayWmos.subList(startHour, (endHour + 1).coerceAtMost(24)).any { WeatherHelper.isRainCode(it) }
+                        } else true
+                        val isClearingInt = if (histWasRainyEarlier && histIsDryNow) 1.0 else 0.0
+
+                        val dayTemps = parseCommaString(day.hourlyTemperatures)
+                        val dayAvgTemp = if (dayTemps.size >= 24) {
+                            dayTemps.subList(startHour, (endHour + 1).coerceAtMost(24)).average()
+                        } else 15.0
+                        val tempCatVal = when {
+                            dayAvgTemp < 5 -> 0.0
+                            dayAvgTemp > 24 -> 2.0
+                            else -> 1.0
+                        }
+
+                        val isWeekendInt = if (day.dayOfWeek == 6 || day.dayOfWeek == 7) 1.0 else 0.0
+                        val dowVal = day.dayOfWeek.toDouble()
+
+                        trainingSamples.add(doubleArrayOf(isWeekendInt, isRainyInt, isClearingInt, tempCatVal, dowVal))
+                        trainingTargets.add(if (hasTripInWindow) 1.0 else 0.0)
+                    }
+
+                    // Train XGBoost Model
+                    val xgb = XGBoostModel(numTrees = 8, learningRate = 0.4, maxDepth = 2)
+                    xgb.train(trainingSamples, trainingTargets.toDoubleArray())
+
+                    // Target features
+                    val tempCatVal = when {
+                        avgTemp < 5 -> 0.0
+                        avgTemp > 24 -> 2.0
+                        else -> 1.0
+                    }
+                    val targetFeatures = doubleArrayOf(
+                        if (isWeekend) 1.0 else 0.0,
+                        if (isRainyForecast) 1.0 else 0.0,
+                        if (isRainClearingForecast) 1.0 else 0.0,
+                        tempCatVal,
+                        targetDayOfWeek.toDouble()
+                    )
+
+                    val prob = xgb.predict(targetFeatures)
+                    val finalProb = (prob * 100).toInt().coerceIn(1, 99)
+
+                    var reasons = "XGBoost (Extreme Gradient Boosting), обучено деревьев: 8. Выделенные факторы: "
+                    val factorImportance = mutableListOf<String>()
+                    if (isWeekend) factorImportance.add("выходной день") else factorImportance.add("будний день")
+                    if (isRainyForecast) factorImportance.add("осадки")
+                    if (isRainClearingForecast) factorImportance.add("прояснение")
+                    factorImportance.add("температура ${avgTemp.toInt()}°C")
+
+                    reasons += factorImportance.joinToString(", ") + ". Точность калибруется по вашей истории (${trainingDays.size} дн)."
+
+                    predictions.add(
+                        Prediction(
+                            index = idx + 1,
+                            probability = finalProb,
+                            startTime = win.startTime,
+                            endTime = win.endTime,
+                            reason = reasons
+                        )
+                    )
+                }
+                return@forEachIndexed
             }
 
             var baseProb = win.defaultProb
