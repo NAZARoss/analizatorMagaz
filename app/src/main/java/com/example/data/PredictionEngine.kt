@@ -610,21 +610,32 @@ object PredictionEngine {
 
         pastTrips.forEach { trip ->
             val startMin = getMinutesOfDay(trip.startTime)
-            val s = (startMin / 10).coerceIn(0, 143)
-            
-            // Apply triangular smoothing weight to neighboring slots
-            for (offset in -2..2) {
-                val idx = s + offset
-                if (idx in 0..143) {
-                    val weight = when (Math.abs(offset)) {
-                        0 -> 1.0
-                        1 -> 0.6
-                        2 -> 0.3
-                        else -> 0.0
-                    }
-                    activityWeight[idx] += weight
+            val endMin = if (trip.endTime != null) {
+                val eMin = getMinutesOfDay(trip.endTime)
+                if (eMin < startMin) {
+                    eMin + 1440
+                } else {
+                    eMin
                 }
+            } else {
+                startMin + 30
             }
+
+            val s = (startMin / 10).coerceIn(0, 143)
+            val e = (endMin / 10).coerceIn(0, 143)
+
+            // High weight inside the trip duration
+            for (idx in s..e) {
+                activityWeight[idx] += 1.0
+            }
+
+            // Smoothing before the start
+            if (s - 1 in 0..143) activityWeight[s - 1] += 0.6
+            if (s - 2 in 0..143) activityWeight[s - 2] += 0.3
+
+            // Smoothing after the end
+            if (e + 1 in 0..143) activityWeight[e + 1] += 0.6
+            if (e + 2 in 0..143) activityWeight[e + 2] += 0.3
         }
 
         val result = mutableListOf<AdaptiveWindow>()
